@@ -30,21 +30,22 @@
 
 #include <Python.h>
 #include <array>
+#include <atomic>
 
 typedef struct
 {
     PyObject_HEAD
-    uint8_t r_akt = 0;
-    uint8_t g_akt = 0;
-    uint8_t b_akt = 0;
-    uint8_t r_fadeTo = 0;
-    uint8_t g_fadeTo = 0;
-    uint8_t b_fadeTo = 0;
-    bool r_fadeDirection = false;
-    bool g_fadeDirection = false;
-    bool b_fadeDirection = false;
-    bool fadeComplete = false;
-    uint32_t pixelIndex = 0;
+    std::atomic<uint8_t> r_akt{0};
+    std::atomic<uint8_t> g_akt{0};
+    std::atomic<uint8_t> b_akt{0};
+    std::atomic<uint8_t> r_fadeTo{0};
+    std::atomic<uint8_t> g_fadeTo{0};
+    std::atomic<uint8_t> b_fadeTo{0};
+    std::atomic_bool r_fadeDirection{false};
+    std::atomic_bool g_fadeDirection{false};
+    std::atomic_bool b_fadeDirection{false};
+    std::atomic_bool fadeComplete{false};
+    std::atomic<uint32_t> pixelIndex{0};
 } PixelObject;
 
 static void Pixel_dealloc(PixelObject* self);
@@ -58,11 +59,11 @@ static PyObject* Pixel_fadeToRgb(PixelObject* self, PyObject* arg);
 static PyObject* Pixel_fillRgb(PixelObject* self, PyObject* arg);
 
 static PyMethodDef PixelMethods[] = {
-        { "getFadeComplete", (PyCFunction)Pixel_getFadeComplete, METH_NOARGS, NULL },
-        { "getIndex", (PyCFunction)Pixel_getIndex, METH_NOARGS, NULL },
-        { "trigger", (PyCFunction)Pixel_trigger, METH_NOARGS, NULL },
-        { "fadeToRgb", (PyCFunction)Pixel_fadeToRgb, METH_VARARGS, NULL },
-        { "fillRgb", (PyCFunction)Pixel_fillRgb, METH_VARARGS, NULL },
+        { "getFadeComplete", (PyCFunction)Pixel_getFadeComplete, METH_NOARGS, nullptr },
+        { "getIndex", (PyCFunction)Pixel_getIndex, METH_NOARGS, nullptr },
+        { "trigger", (PyCFunction)Pixel_trigger, METH_NOARGS, nullptr },
+        { "fadeToRgb", (PyCFunction)Pixel_fadeToRgb, METH_VARARGS, nullptr },
+        { "fillRgb", (PyCFunction)Pixel_fillRgb, METH_VARARGS, nullptr },
         { nullptr, nullptr, 0, nullptr }
 };
 
@@ -125,7 +126,7 @@ static PyObject* Pixel_new(PyTypeObject* type, PyObject* arg, PyObject* kw)
     if(!self) return nullptr;
     //Py_INCREF(self); //valgrind does not complain if we don't do this and the dealloc is only called after setting the object to "None".
 
-    self->pixelIndex = (uint32_t)pixelIndex;
+    self->pixelIndex.store((uint32_t)pixelIndex, std::memory_order_release);
 
     return (PyObject*)self;
 }
@@ -142,47 +143,48 @@ static void Pixel_dealloc(PixelObject* self)
 
 static PyObject* Pixel_getFadeComplete(PixelObject* self)
 {
-    return self->fadeComplete ? Py_True : Py_False;
+    if(self->fadeComplete.load(std::memory_order_acquire)) return Py_True;
+    else return Py_False;
 }
 
 static PyObject* Pixel_getIndex(PixelObject* self)
 {
-    return Py_BuildValue("k", self->pixelIndex);
+    return Py_BuildValue("k", self->pixelIndex.load(std::memory_order_acquire));
 }
 
 static PyObject* Pixel_trigger(PixelObject* self)
 {
-    auto rFadeComplete = self->r_akt == self->r_fadeTo;
-    auto gFadeComplete = self->g_akt == self->g_fadeTo;
-    auto bFadeComplete = self->b_akt == self->b_fadeTo;
-    self->fadeComplete = rFadeComplete && gFadeComplete && bFadeComplete;
+    auto rFadeComplete = self->r_akt.load(std::memory_order_acquire) == self->r_fadeTo.load(std::memory_order_acquire);
+    auto gFadeComplete = self->g_akt.load(std::memory_order_acquire) == self->g_fadeTo.load(std::memory_order_acquire);
+    auto bFadeComplete = self->b_akt.load(std::memory_order_acquire) == self->b_fadeTo.load(std::memory_order_acquire);
+    self->fadeComplete.store(rFadeComplete && gFadeComplete && bFadeComplete, std::memory_order_release);
 
     PyObject* output = PyList_New(3);
 
-    if(!self->fadeComplete)
+    if(!self->fadeComplete.load(std::memory_order_acquire))
     {
         if(!rFadeComplete)
         {
-            if(self->r_fadeDirection && self->r_akt < 255) self->r_akt++;
-            else if(self->r_akt > 0) self->r_akt--;
+            if(self->r_fadeDirection.load(std::memory_order_acquire) && self->r_akt.load(std::memory_order_acquire) < 255) self->r_akt++;
+            else if(self->r_akt.load(std::memory_order_acquire) > 0) self->r_akt--;
         }
 
         if(!gFadeComplete)
         {
-            if(self->g_fadeDirection && self->g_akt < 255) self->g_akt++;
-            else if(self->g_akt > 0) self->g_akt--;
+            if(self->g_fadeDirection.load(std::memory_order_acquire) && self->g_akt.load(std::memory_order_acquire) < 255) self->g_akt++;
+            else if(self->g_akt.load(std::memory_order_acquire) > 0) self->g_akt--;
         }
 
         if(!bFadeComplete)
         {
-            if(self->b_fadeDirection && self->b_akt < 255) self->b_akt++;
-            else if(self->b_akt > 0) self->b_akt--;
+            if(self->b_fadeDirection.load(std::memory_order_acquire) && self->b_akt.load(std::memory_order_acquire) < 255) self->b_akt++;
+            else if(self->b_akt.load(std::memory_order_acquire) > 0) self->b_akt--;
         }
     }
 
-    PyList_SetItem(output, 0, Py_BuildValue("b", self->r_akt));
-    PyList_SetItem(output, 1, Py_BuildValue("b", self->g_akt));
-    PyList_SetItem(output, 2, Py_BuildValue("b", self->b_akt));
+    PyList_SetItem(output, 0, Py_BuildValue("b", self->r_akt.load(std::memory_order_acquire)));
+    PyList_SetItem(output, 1, Py_BuildValue("b", self->g_akt.load(std::memory_order_acquire)));
+    PyList_SetItem(output, 2, Py_BuildValue("b", self->b_akt.load(std::memory_order_acquire)));
 
     return output;
 }
@@ -241,13 +243,13 @@ static PyObject* Pixel_fadeToRgb(PixelObject* self, PyObject* arg)
             return nullptr;
     }
 
-    self->r_fadeTo = r.at(0);
-    self->g_fadeTo = r.at(1);
-    self->b_fadeTo = r.at(2);
-    self->fadeComplete = false;
-    self->r_fadeDirection = self->r_akt < self->r_fadeTo;
-    self->g_fadeDirection = self->g_akt < self->g_fadeTo;
-    self->b_fadeDirection = self->b_akt < self->b_fadeTo;
+    self->r_fadeTo.store(r.at(0), std::memory_order_release);
+    self->g_fadeTo.store(r.at(1), std::memory_order_release);
+    self->b_fadeTo.store(r.at(2), std::memory_order_release);
+    self->fadeComplete.store(false, std::memory_order_release);
+    self->r_fadeDirection.store(self->r_akt.load(std::memory_order_acquire) < self->r_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
+    self->g_fadeDirection.store(self->g_akt.load(std::memory_order_acquire) < self->g_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
+    self->b_fadeDirection.store(self->b_akt.load(std::memory_order_acquire) < self->b_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
 
     return Py_None;
 }
@@ -306,13 +308,13 @@ static PyObject* Pixel_fillRgb(PixelObject* self, PyObject* arg)
             return nullptr;
     }
 
-    self->r_fadeTo = r.at(0);
-    self->g_fadeTo = r.at(1);
-    self->b_fadeTo = r.at(2);
-    self->r_akt = r.at(0);
-    self->g_akt = r.at(1);
-    self->b_akt = r.at(2);
-    self->fadeComplete = false;
+    self->r_fadeTo.store(r.at(0), std::memory_order_release);
+    self->g_fadeTo.store(r.at(1), std::memory_order_release);
+    self->b_fadeTo.store(r.at(2), std::memory_order_release);
+    self->r_akt.store(r.at(0), std::memory_order_release);
+    self->g_akt.store(r.at(1), std::memory_order_release);
+    self->b_akt.store(r.at(2), std::memory_order_release);
+    self->fadeComplete.store(false, std::memory_order_release);
 
     return Py_None;
 }
