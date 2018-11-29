@@ -143,8 +143,16 @@ static void Pixel_dealloc(PixelObject* self)
 
 static PyObject* Pixel_getFadeComplete(PixelObject* self)
 {
-    if(self->fadeComplete.load(std::memory_order_acquire)) return Py_True;
-    else return Py_False;
+    if(self->fadeComplete.load(std::memory_order_acquire))
+    {
+        Py_INCREF(Py_True);
+        return Py_True;
+    }
+    else
+    {
+        Py_INCREF(Py_False);
+        return Py_False;
+    }
 }
 
 static PyObject* Pixel_getIndex(PixelObject* self)
@@ -251,6 +259,7 @@ static PyObject* Pixel_fadeToRgb(PixelObject* self, PyObject* arg)
     self->g_fadeDirection.store(self->g_akt.load(std::memory_order_acquire) < self->g_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
     self->b_fadeDirection.store(self->b_akt.load(std::memory_order_acquire) < self->b_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
 
+    Py_INCREF(Py_None);
     return Py_None;
 }
 
@@ -316,6 +325,7 @@ static PyObject* Pixel_fillRgb(PixelObject* self, PyObject* arg)
     self->b_akt.store(r.at(2), std::memory_order_release);
     self->fadeComplete.store(false, std::memory_order_release);
 
+    Py_INCREF(Py_None);
     return Py_None;
 }
 
