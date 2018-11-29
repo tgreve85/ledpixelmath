@@ -32,6 +32,8 @@
 #include <array>
 #include <atomic>
 
+#define VERSION "1.0.2"
+
 typedef struct
 {
     PyObject_HEAD
@@ -52,6 +54,7 @@ static void Pixel_dealloc(PixelObject* self);
 static int Pixel_init(PixelObject* self, PyObject* arg);
 static PyObject* Pixel_new(PyTypeObject* type, PyObject* arg, PyObject* kw);
 
+static PyObject* Pixel_getVersion(PixelObject* self);
 static PyObject* Pixel_getFadeComplete(PixelObject* self);
 static PyObject* Pixel_getIndex(PixelObject* self);
 static PyObject* Pixel_trigger(PixelObject* self);
@@ -59,6 +62,7 @@ static PyObject* Pixel_fadeToRgb(PixelObject* self, PyObject* arg);
 static PyObject* Pixel_fillRgb(PixelObject* self, PyObject* arg);
 
 static PyMethodDef PixelMethods[] = {
+        { "getVersion", (PyCFunction)Pixel_getVersion, METH_NOARGS, nullptr },
         { "getFadeComplete", (PyCFunction)Pixel_getFadeComplete, METH_NOARGS, nullptr },
         { "getIndex", (PyCFunction)Pixel_getIndex, METH_NOARGS, nullptr },
         { "trigger", (PyCFunction)Pixel_trigger, METH_NOARGS, nullptr },
@@ -139,6 +143,11 @@ static int Pixel_init(PixelObject* self, PyObject* arg)
 static void Pixel_dealloc(PixelObject* self)
 {
 	
+}
+
+static PyObject* Pixel_getVersion(PixelObject* self)
+{
+    return Py_BuildValue("s", VERSION);
 }
 
 static PyObject* Pixel_getFadeComplete(PixelObject* self)
