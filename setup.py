@@ -10,7 +10,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
 	name="ledpixelmath",
-	version="1.0.2",
+	version="1.0.3",
 	description = 'Does heavy LED pixel calculations.',
 	long_description=long_description,
 	long_description_content_type="text/markdown",
@@ -20,7 +20,7 @@ setuptools.setup(
 	keywords = ['led', 'pixel', 'math', 'calculation'],
 	ext_modules=[
 		Extension("ledpixelmath", ["ledpixelmath.cpp"],
-		extra_compile_args=['-std=c++11'])
+		extra_compile_args=['-std=c++17'])
 	],
 	include_package_data=True,
 	classifiers=(

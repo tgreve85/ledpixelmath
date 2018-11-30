@@ -30,14 +30,15 @@
 
 #include <Python.h>
 #include <array>
+#include <vector>
 #include <atomic>
+#include <memory>
 
-#define VERSION "1.0.2"
+#define VERSION "1.0.3"
 
-typedef struct
+struct PixelData
 {
-    PyObject_HEAD
-    std::atomic<uint8_t> r_akt{0};
+	std::atomic<uint8_t> r_akt{0};
     std::atomic<uint8_t> g_akt{0};
     std::atomic<uint8_t> b_akt{0};
     std::atomic<uint8_t> r_fadeTo{0};
@@ -47,7 +48,22 @@ typedef struct
     std::atomic_bool g_fadeDirection{false};
     std::atomic_bool b_fadeDirection{false};
     std::atomic_bool fadeComplete{false};
-    std::atomic<uint32_t> pixelIndex{0};
+    std::atomic<unsigned long> pixelIndex{0};
+	
+	PixelData(unsigned long index)
+	{
+		pixelIndex.store(index, std::memory_order_release);
+	}
+	
+	PixelData(const PixelData&) = delete;
+};
+
+typedef struct
+{
+    PyObject_HEAD
+    std::atomic_bool fadeComplete{false};
+    std::atomic<unsigned long> PixelCount{0};
+	std::vector<std::shared_ptr<PixelData>> pixels;
 } PixelObject;
 
 static void Pixel_dealloc(PixelObject* self);
@@ -56,17 +72,19 @@ static PyObject* Pixel_new(PyTypeObject* type, PyObject* arg, PyObject* kw);
 
 static PyObject* Pixel_getVersion(PixelObject* self);
 static PyObject* Pixel_getFadeComplete(PixelObject* self);
-static PyObject* Pixel_getIndex(PixelObject* self);
+static PyObject* Pixel_getPixelCount(PixelObject* self);
 static PyObject* Pixel_trigger(PixelObject* self);
 static PyObject* Pixel_fadeToRgb(PixelObject* self, PyObject* arg);
+static PyObject* Pixel_setRgb(PixelObject* self, PyObject* arg);
 static PyObject* Pixel_fillRgb(PixelObject* self, PyObject* arg);
 
 static PyMethodDef PixelMethods[] = {
         { "getVersion", (PyCFunction)Pixel_getVersion, METH_NOARGS, nullptr },
         { "getFadeComplete", (PyCFunction)Pixel_getFadeComplete, METH_NOARGS, nullptr },
-        { "getIndex", (PyCFunction)Pixel_getIndex, METH_NOARGS, nullptr },
+        { "getPixelCount", (PyCFunction)Pixel_getPixelCount, METH_NOARGS, nullptr },
         { "trigger", (PyCFunction)Pixel_trigger, METH_NOARGS, nullptr },
         { "fadeToRgb", (PyCFunction)Pixel_fadeToRgb, METH_VARARGS, nullptr },
+        { "setRgb", (PyCFunction)Pixel_setRgb, METH_VARARGS, nullptr },
         { "fillRgb", (PyCFunction)Pixel_fillRgb, METH_VARARGS, nullptr },
         { nullptr, nullptr, 0, nullptr }
 };
@@ -92,7 +110,7 @@ static PyTypeObject PixelObjectType = {
         nullptr,                           // tp_setattro
         nullptr,                           // tp_as_buffer
         Py_TPFLAGS_DEFAULT,          // tp_flags
-        "Class to store one LED pixel.",   // tp_doc
+        "Class to store x LED pixels.",   // tp_doc
         nullptr,                           // tp_traverse
         nullptr,                           // tp_clear
         nullptr,                           // tp_richcompare
@@ -115,22 +133,40 @@ static PyTypeObject PixelObjectType = {
 
 static PyObject* Pixel_new(PyTypeObject* type, PyObject* arg, PyObject* kw)
 {
-    unsigned long pixelIndex = 0;
+    unsigned long pixelCount = 0;
 
     switch(PyTuple_Size(arg))
     {
         case 1:
-            if(!PyArg_ParseTuple(arg, "k", &pixelIndex)) return nullptr;
+        {
+			if(!PyArg_ParseTuple(arg, "k", &pixelCount))
+			{
+				PyErr_SetString(PyExc_RuntimeError, "Argument is not of type integer.");
+				return nullptr;
+			}
             break;
+		}
         default:
+		{
+			PyErr_SetString(PyExc_RuntimeError, "No argument of type integer was given.");
             return nullptr;
+		}
     }
 
     auto self = (PixelObject*)type->tp_alloc(type, 0);
     if(!self) return nullptr;
     //Py_INCREF(self); //valgrind does not complain if we don't do this and the dealloc is only called after setting the object to "None".
 
-    self->pixelIndex.store((uint32_t)pixelIndex, std::memory_order_release);
+    self->PixelCount.store(pixelCount, std::memory_order_release);
+		
+	self->pixels.reserve(pixelCount);
+	for (int32_t i = 0; i < (signed)pixelCount; ++i)
+	{
+		auto pixelData = std::make_shared<PixelData>(i);
+		//pixelData->pixelIndex.store(i, std::memory_order_release);
+		self->pixels.emplace_back(std::move(pixelData));
+	}
+	
 
     return (PyObject*)self;
 }
@@ -162,61 +198,150 @@ static PyObject* Pixel_getFadeComplete(PixelObject* self)
     }
 }
 
-static PyObject* Pixel_getIndex(PixelObject* self)
+static PyObject* Pixel_getPixelCount(PixelObject* self)
 {
-    return Py_BuildValue("k", self->pixelIndex.load(std::memory_order_acquire));
+    return Py_BuildValue("k", self->PixelCount.load(std::memory_order_acquire));
 }
 
 static PyObject* Pixel_trigger(PixelObject* self)
 {
-    auto rFadeComplete = self->r_akt.load(std::memory_order_acquire) == self->r_fadeTo.load(std::memory_order_acquire);
-    auto gFadeComplete = self->g_akt.load(std::memory_order_acquire) == self->g_fadeTo.load(std::memory_order_acquire);
-    auto bFadeComplete = self->b_akt.load(std::memory_order_acquire) == self->b_fadeTo.load(std::memory_order_acquire);
-    self->fadeComplete.store(rFadeComplete && gFadeComplete && bFadeComplete, std::memory_order_release);
+	PyObject* output = PyList_New(self->PixelCount.load(std::memory_order_acquire));
+	bool fadeComplete = true;
+	
+	for (auto& pixel : self->pixels)
+	{
+		auto rFadeComplete = pixel->r_akt.load(std::memory_order_acquire) == pixel->r_fadeTo.load(std::memory_order_acquire);
+		auto gFadeComplete = pixel->g_akt.load(std::memory_order_acquire) == pixel->g_fadeTo.load(std::memory_order_acquire);
+		auto bFadeComplete = pixel->b_akt.load(std::memory_order_acquire) == pixel->b_fadeTo.load(std::memory_order_acquire);
+		pixel->fadeComplete.store(rFadeComplete && gFadeComplete && bFadeComplete, std::memory_order_release);
+		if (!pixel->fadeComplete.load(std::memory_order_acquire))
+			fadeComplete = false;
 
-    PyObject* output = PyList_New(3);
+		if(!pixel->fadeComplete.load(std::memory_order_acquire))
+		{
+			if(!rFadeComplete)
+			{
+				if(pixel->r_fadeDirection.load(std::memory_order_acquire) && pixel->r_akt.load(std::memory_order_acquire) < 255) pixel->r_akt++;
+				else if(pixel->r_akt.load(std::memory_order_acquire) > 0) pixel->r_akt--;
+			}
 
-    if(!self->fadeComplete.load(std::memory_order_acquire))
-    {
-        if(!rFadeComplete)
-        {
-            if(self->r_fadeDirection.load(std::memory_order_acquire) && self->r_akt.load(std::memory_order_acquire) < 255) self->r_akt++;
-            else if(self->r_akt.load(std::memory_order_acquire) > 0) self->r_akt--;
-        }
+			if(!gFadeComplete)
+			{
+				if(pixel->g_fadeDirection.load(std::memory_order_acquire) && pixel->g_akt.load(std::memory_order_acquire) < 255) pixel->g_akt++;
+				else if(pixel->g_akt.load(std::memory_order_acquire) > 0) pixel->g_akt--;
+			}
 
-        if(!gFadeComplete)
-        {
-            if(self->g_fadeDirection.load(std::memory_order_acquire) && self->g_akt.load(std::memory_order_acquire) < 255) self->g_akt++;
-            else if(self->g_akt.load(std::memory_order_acquire) > 0) self->g_akt--;
-        }
-
-        if(!bFadeComplete)
-        {
-            if(self->b_fadeDirection.load(std::memory_order_acquire) && self->b_akt.load(std::memory_order_acquire) < 255) self->b_akt++;
-            else if(self->b_akt.load(std::memory_order_acquire) > 0) self->b_akt--;
-        }
-    }
-
-    PyList_SetItem(output, 0, Py_BuildValue("b", self->r_akt.load(std::memory_order_acquire)));
-    PyList_SetItem(output, 1, Py_BuildValue("b", self->g_akt.load(std::memory_order_acquire)));
-    PyList_SetItem(output, 2, Py_BuildValue("b", self->b_akt.load(std::memory_order_acquire)));
-
+			if(!bFadeComplete)
+			{
+				if(pixel->b_fadeDirection.load(std::memory_order_acquire) && pixel->b_akt.load(std::memory_order_acquire) < 255) pixel->b_akt++;
+				else if(pixel->b_akt.load(std::memory_order_acquire) > 0) pixel->b_akt--;
+			}
+		}
+		
+		
+		PyObject* result = PyList_New(3);
+		
+		PyList_SetItem(result, 0, Py_BuildValue("b", pixel->r_akt.load(std::memory_order_acquire)));
+		PyList_SetItem(result, 1, Py_BuildValue("b", pixel->g_akt.load(std::memory_order_acquire)));
+		PyList_SetItem(result, 2, Py_BuildValue("b", pixel->b_akt.load(std::memory_order_acquire)));
+	
+		PyList_SetItem(output, pixel->pixelIndex.load(std::memory_order_acquire), result);
+	}
+	self->fadeComplete.store(fadeComplete, std::memory_order_release);
     return output;
 }
 
 static PyObject* Pixel_fadeToRgb(PixelObject* self, PyObject* arg)
 {
     std::array<uint8_t, 3> r{ 0, 0, 0 };
-
+	unsigned long pixelIndex = 0;
+	
     switch(PyTuple_Size(arg))
     {
-        case 1:
+        case 2:
         {
             PyObject* rgb = nullptr;
 
-            if(!PyArg_ParseTuple(arg, "O", &rgb) || !PyList_Check(rgb))
+            if(!PyArg_ParseTuple(arg, "kO", &pixelIndex, &rgb) || !PyList_Check(rgb))
             {
-                PyErr_SetString(PyExc_TypeError, "Argument is not of type list.");
+                PyErr_SetString(PyExc_TypeError, "First argument is not of type integer or second argument is not of type list.");
+                return nullptr;
+            }
+
+            Py_ssize_t listSize = PyList_Size(rgb);
+            if(listSize != 3)
+            {
+                PyErr_SetString(PyExc_TypeError, "List size is not 3.");
+                return nullptr;
+            }
+
+            auto value = PyList_GetItem(rgb, 0);
+            if(!PyLong_Check(value))
+            {
+                PyErr_SetString(PyExc_TypeError, "First list element is not of type integer.");
+                return nullptr;
+            }
+            r.at(0) = (uint8_t)PyLong_AsLong(value);
+
+            value = PyList_GetItem(rgb, 1);
+            if(!PyLong_Check(value))
+            {
+                PyErr_SetString(PyExc_TypeError, "Second list element is not of type integer.");
+                return nullptr;
+            }
+            r.at(1) = (uint8_t)PyLong_AsLong(value);
+
+            value = PyList_GetItem(rgb, 2);
+            if(!PyLong_Check(value))
+            {
+                PyErr_SetString(PyExc_TypeError, "Third list element is not of type integer.");
+                return nullptr;
+            }
+            r.at(2) = (uint8_t)PyLong_AsLong(value);
+
+            break;
+        }
+        default:
+            PyErr_SetString(PyExc_RuntimeError, "Invalid number of arguments. Expected: pixelindex, [r, g, b]");
+            return nullptr;
+    }
+
+	if (pixelIndex >= self->PixelCount.load(std::memory_order_acquire))
+	{
+		PyErr_SetString(PyExc_RuntimeError, "Invalid pixelIndex.");
+		return nullptr;
+	}
+	
+
+	auto& pixel = self->pixels.at(pixelIndex);
+
+	pixel->r_fadeTo.store(r.at(0), std::memory_order_release);
+	pixel->g_fadeTo.store(r.at(1), std::memory_order_release);
+	pixel->b_fadeTo.store(r.at(2), std::memory_order_release);
+	pixel->fadeComplete.store(false, std::memory_order_release);
+	pixel->r_fadeDirection.store(pixel->r_akt.load(std::memory_order_acquire) < pixel->r_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
+	pixel->g_fadeDirection.store(pixel->g_akt.load(std::memory_order_acquire) < pixel->g_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
+	pixel->b_fadeDirection.store(pixel->b_akt.load(std::memory_order_acquire) < pixel->b_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
+
+	
+    Py_RETURN_NONE;
+}
+
+
+static PyObject* Pixel_setRgb(PixelObject* self, PyObject* arg)
+{
+    std::array<uint8_t, 3> r{ 0, 0, 0 };
+	unsigned long pixelIndex = 0;
+	
+    switch(PyTuple_Size(arg))
+    {
+        case 2:
+        {
+            PyObject* rgb = nullptr;
+
+            if(!PyArg_ParseTuple(arg, "kO", &pixelIndex, &rgb) || !PyList_Check(rgb))
+            {
+                PyErr_SetString(PyExc_TypeError, "First argument is not of type integer or second argument is not of type list.");
                 return nullptr;
             }
 
@@ -258,21 +383,32 @@ static PyObject* Pixel_fadeToRgb(PixelObject* self, PyObject* arg)
             return nullptr;
     }
 
-    self->r_fadeTo.store(r.at(0), std::memory_order_release);
-    self->g_fadeTo.store(r.at(1), std::memory_order_release);
-    self->b_fadeTo.store(r.at(2), std::memory_order_release);
-    self->fadeComplete.store(false, std::memory_order_release);
-    self->r_fadeDirection.store(self->r_akt.load(std::memory_order_acquire) < self->r_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
-    self->g_fadeDirection.store(self->g_akt.load(std::memory_order_acquire) < self->g_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
-    self->b_fadeDirection.store(self->b_akt.load(std::memory_order_acquire) < self->b_fadeTo.load(std::memory_order_acquire), std::memory_order_release);
+	if (pixelIndex >= self->PixelCount.load(std::memory_order_acquire))
+	{
+		PyErr_SetString(PyExc_RuntimeError, "Invalid pixelIndex.");
+		return nullptr;
+	}
 
+
+	auto& pixel = self->pixels.at(pixelIndex);
+
+	pixel->r_fadeTo.store(r.at(0), std::memory_order_release);
+	pixel->g_fadeTo.store(r.at(1), std::memory_order_release);
+	pixel->b_fadeTo.store(r.at(2), std::memory_order_release);
+	pixel->r_akt.store(r.at(0), std::memory_order_release);
+	pixel->g_akt.store(r.at(1), std::memory_order_release);
+	pixel->b_akt.store(r.at(2), std::memory_order_release);
+	pixel->fadeComplete.store(false, std::memory_order_release);
+
+	
     Py_RETURN_NONE;
 }
+
 
 static PyObject* Pixel_fillRgb(PixelObject* self, PyObject* arg)
 {
     std::array<uint8_t, 3> r{ 0, 0, 0 };
-
+	
     switch(PyTuple_Size(arg))
     {
         case 1:
@@ -323,14 +459,17 @@ static PyObject* Pixel_fillRgb(PixelObject* self, PyObject* arg)
             return nullptr;
     }
 
-    self->r_fadeTo.store(r.at(0), std::memory_order_release);
-    self->g_fadeTo.store(r.at(1), std::memory_order_release);
-    self->b_fadeTo.store(r.at(2), std::memory_order_release);
-    self->r_akt.store(r.at(0), std::memory_order_release);
-    self->g_akt.store(r.at(1), std::memory_order_release);
-    self->b_akt.store(r.at(2), std::memory_order_release);
-    self->fadeComplete.store(false, std::memory_order_release);
-
+	for (auto& pixel : self->pixels)
+	{
+		pixel->r_fadeTo.store(r.at(0), std::memory_order_release);
+		pixel->g_fadeTo.store(r.at(1), std::memory_order_release);
+		pixel->b_fadeTo.store(r.at(2), std::memory_order_release);
+		pixel->r_akt.store(r.at(0), std::memory_order_release);
+		pixel->g_akt.store(r.at(1), std::memory_order_release);
+		pixel->b_akt.store(r.at(2), std::memory_order_release);
+		pixel->fadeComplete.store(false, std::memory_order_release);
+	}
+	
     Py_RETURN_NONE;
 }
 
