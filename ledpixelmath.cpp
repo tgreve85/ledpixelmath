@@ -178,7 +178,7 @@ static int Pixel_init(PixelObject* self, PyObject* arg)
 
 static void Pixel_dealloc(PixelObject* self)
 {
-	
+    Py_TYPE(self)->tp_free(self);
 }
 
 static PyObject* Pixel_getVersion(PixelObject* self)
